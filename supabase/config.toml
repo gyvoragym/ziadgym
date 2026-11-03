@@ -1,0 +1,7 @@
+project_id = "vessfgurvwstvqfalwuv"
+
+[auth]
+minimum_password_length = 1
+
+[auth.email]
+enable_confirmations = false

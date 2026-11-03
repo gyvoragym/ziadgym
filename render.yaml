@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: gyvora-api
+    runtime: node
+    plan: starter
+    rootDir: server
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: gyvora-sqlite
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_PATH
+        value: /var/data/gyvora.sqlite
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: COOKIE_SAME_SITE
+        value: none
+      - key: FRONTEND_ORIGIN
+        sync: false
