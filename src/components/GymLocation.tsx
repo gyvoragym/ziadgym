@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { fmtPoint, mapsLink, reverseGeocode, searchPlaces, validPoint, type GeoPoint } from "@/lib/geo";
+import { accuracyHint, bestCurrentPosition, fmtPoint, mapsLink, reverseGeocode, searchPlaces, validPoint, type GeoPoint, type LocationFix } from "@/lib/geo";
 import { getState, saveState } from "@/lib/store";
 
 const LeafletMap = lazy(() => import("./LeafletMap"));
@@ -30,63 +30,27 @@ export function CurrentLocationButton({
   const [permissionHelpOpen, setPermissionHelpOpen] = useState(false);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
 
-  async function saveCurrentLocation() {
-    if (!navigator.geolocation) {
-      setLocationPickerOpen(true);
-      return;
-    }
-    if (!window.isSecureContext) {
-      setLocationPickerOpen(true);
-      return;
-    }
+  const [fix, setFix] = useState<LocationFix | null>(null);
 
+  async function saveCurrentLocation() {
+    if (!navigator.geolocation || !window.isSecureContext) {
+      setFix(null);
+      setLocationPickerOpen(true);
+      return;
+    }
     setBusy(true);
     try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(
-          resolve,
-          (error) => {
-            if (error.code === error.PERMISSION_DENIED) {
-              setPermissionHelpOpen(true);
-            }
-            reject(new Error(
-              error.code === error.PERMISSION_DENIED
-                ? "Location access is blocked for this site."
-                : error.code === error.TIMEOUT
-                  ? "Finding your location took too long. Try again."
-                  : "Your current location is unavailable.",
-            ));
-          },
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
-        );
-      });
-      const point = {
-        lat: Number(position.coords.latitude.toFixed(6)),
-        lng: Number(position.coords.longitude.toFixed(6)),
-      };
-      let address = fmtPoint(point);
-      let addressUnavailable = false;
-      try {
-        const resolvedAddress = await reverseGeocode(point);
-        if (resolvedAddress) address = resolvedAddress;
-        else addressUnavailable = true;
-      } catch {
-        addressUnavailable = true;
-      }
-
-      if (persist) {
-        await saveState(() => ({ gym: { ...getState().gym, location: address, coords: point } }));
-      }
-      onLocation?.({ address, coords: point });
-      if (addressUnavailable) {
-        toast.error(persist
-          ? "Current map location saved as coordinates, but its street address could not be found."
-          : "Current coordinates filled in the address field, but the street address could not be found.");
-      } else {
-        toast.success(persist ? "Current location saved" : "Current location filled in the address field");
-      }
+      // Nothing is saved yet: the owner confirms or drags the pin in the dialog first.
+      setFix(await bestCurrentPosition());
+      setLocationPickerOpen(true);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save your current location.");
+      const denied = !!error && typeof error === "object" && "code" in error && (error as GeolocationPositionError).code === 1;
+      if (denied) setPermissionHelpOpen(true);
+      else {
+        toast.error("Your current location is unavailable. Choose the spot on the map instead.");
+        setFix(null);
+        setLocationPickerOpen(true);
+      }
     } finally {
       setBusy(false);
     }
@@ -103,10 +67,10 @@ export function CurrentLocationButton({
           <DialogHeader><DialogTitle>Allow location access</DialogTitle></DialogHeader>
           <p className="text-sm text-muted-foreground">{LOCATION_PERMISSION_HELP}</p>
           <p className="text-sm text-muted-foreground">You can also edit the gym location by searching for an address or placing the pin on the map.</p>
-          <DialogFooter><Button variant="outline" onClick={() => setPermissionHelpOpen(false)}>Got it</Button><Button onClick={() => { setPermissionHelpOpen(false); setLocationPickerOpen(true); }}>Choose on map</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setPermissionHelpOpen(false)}>Got it</Button><Button onClick={() => { setPermissionHelpOpen(false); setFix(null); setLocationPickerOpen(true); }}>Choose on map</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-      <LocationPickerDialog open={locationPickerOpen} onOpenChange={setLocationPickerOpen} persist={persist} {...(onLocation ? { onLocation } : {})} />
+      <LocationPickerDialog open={locationPickerOpen} onOpenChange={o => { setLocationPickerOpen(o); if (!o) setFix(null); }} persist={persist} initialFix={fix} {...(onLocation ? { onLocation } : {})} />
     </>
   );
 }
@@ -129,36 +93,47 @@ export function LocationPickerDialog({
   onOpenChange,
   onLocation,
   persist = true,
+  initialFix = null,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   onLocation?: (location: { address: string; coords: GeoPoint }) => void;
   persist?: boolean;
+  initialFix?: LocationFix | null;
 }) {
   const [point, setPoint] = useState<GeoPoint | null>(null);
   const [address, setAddress] = useState("");
   const [q, setQ] = useState("");
   const [results, setResults] = useState<{ label: string; point: GeoPoint }[]>([]);
-  const [status, setStatus] = useState<{ kind: "idle" | "busy" | "error"; text?: string }>({ kind: "idle" });
+  const [status, setStatus] = useState<{ kind: "idle" | "busy" | "error" | "info"; text?: string }>({ kind: "idle" });
   const [mapError, setMapError] = useState("");
   const [saving, setSaving] = useState(false);
-  useEffect(() => { if (!open) return; const g = getState().gym; setPoint(validPoint(g.coords) ? g.coords : null); setAddress(g.location ?? ""); setQ(""); setResults([]); setStatus({ kind: "idle" }); setMapError(""); }, [open]);
+  const [accuracy, setAccuracy] = useState<number | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const g = getState().gym;
+    setPoint(validPoint(g.coords) ? g.coords : null); setAddress(g.location ?? ""); setQ(""); setResults([]); setStatus({ kind: "idle" }); setMapError(""); setAccuracy(null);
+    if (initialFix) void choose(initialFix.point, undefined, initialFix.accuracy);
+  }, [open]);
 
-  const choose = async (p: GeoPoint, label?: string) => {
-    setPoint(p); setResults([]);
-    if (label) { setAddress(label); return; }
+  const choose = async (p: GeoPoint, label?: string, fixAccuracy?: number) => {
+    setPoint(p); setResults([]); setAccuracy(fixAccuracy ?? null);
+    const hint = fixAccuracy == null ? "" : accuracyHint(fixAccuracy);
+    if (label) { setAddress(label); setStatus({ kind: "idle" }); return; }
     setStatus({ kind: "busy", text: "Looking up address…" });
-    try { const a = await reverseGeocode(p); if (a) setAddress(a); setStatus({ kind: "idle" }); }
-    catch { setStatus({ kind: "error", text: "Pin placed, but the address could not be looked up. You can type it below." }); }
+    try { const a = await reverseGeocode(p); if (a) setAddress(a); setStatus(hint ? { kind: fixAccuracy! > 50 ? "error" : "info", text: hint } : { kind: "idle" }); }
+    catch { setStatus({ kind: "error", text: `${hint ? `${hint} ` : ""}The address could not be looked up. You can type it below.` }); }
   };
   const useCurrent = () => {
     if (!("geolocation" in navigator)) { setStatus({ kind: "error", text: "This browser doesn't support location. Search or tap the map instead." }); return; }
     if (!window.isSecureContext) { setStatus({ kind: "error", text: SECURE_CONTEXT_HELP }); return; }
-    setStatus({ kind: "busy", text: "Finding your location…" });
-    navigator.geolocation.getCurrentPosition(
-      pos => void choose({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      err => setStatus({ kind: "error", text: err.code === err.PERMISSION_DENIED ? `${LOCATION_PERMISSION_HELP} You can also search or tap the map instead.` : err.code === err.TIMEOUT ? "Finding your location took too long. Try again or choose on the map." : "Your current location is unavailable. Search or tap the map instead." }),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+    setStatus({ kind: "busy", text: "Finding your exact location… (this can take up to 20 seconds)" });
+    bestCurrentPosition().then(
+      f => void choose(f.point, undefined, f.accuracy),
+      (err: unknown) => {
+        const code = err && typeof err === "object" && "code" in err ? (err as GeolocationPositionError).code : 0;
+        setStatus({ kind: "error", text: code === 1 ? `${LOCATION_PERMISSION_HELP} You can also search or tap the map instead.` : code === 3 ? "Finding your location took too long. Try again or choose on the map." : "Your current location is unavailable. Search or tap the map instead." });
+      });
   };
   const search = async () => {
     if (q.trim().length < 3) { setStatus({ kind: "error", text: "Type at least 3 characters to search." }); return; }
@@ -194,7 +169,7 @@ export function LocationPickerDialog({
       </div>
       {results.length > 0 && <ul className="max-h-40 overflow-y-auto rounded-lg border">{results.map((r, i) => <li key={i}><button type="button" className="w-full px-3 py-2 text-left text-sm hover:bg-secondary" onClick={() => void choose(r.point, r.label)}>{r.label}</button></li>)}</ul>}
       {mapError ? <p role="alert" className="rounded-lg border border-destructive/40 p-4 text-sm text-destructive">{mapError}</p>
-        : <ClientOnly fallback={<MapSkeleton />}><Suspense fallback={<MapSkeleton />}><LeafletMap point={point} onPick={p => void choose(p)} onError={setMapError} className="h-64 w-full sm:h-80" /></Suspense></ClientOnly>}
+        : <ClientOnly fallback={<MapSkeleton />}><Suspense fallback={<MapSkeleton />}><LeafletMap point={point} accuracy={accuracy} onPick={p => void choose(p)} onError={setMapError} className="h-64 w-full sm:h-80" /></Suspense></ClientOnly>}
       <p className="text-xs text-muted-foreground">Tap the map or drag the pin to adjust the exact spot.</p>
       {status.kind !== "idle" && <p role={status.kind === "error" ? "alert" : "status"} className={`flex items-center gap-2 text-sm ${status.kind === "error" ? "text-destructive" : "text-muted-foreground"}`}>{status.kind === "busy" && <LoaderCircle className="h-4 w-4 animate-spin" />}{status.text}</p>}
       <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
