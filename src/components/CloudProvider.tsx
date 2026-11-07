@@ -3,7 +3,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useRouter, useRouterState, useHydrated, Link } from "@tanstack/react-router";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
-import { bindPersistence, hydrateState, getState, initialState, defaultGymHours, type State } from "@/lib/store";
+import { StaleRecordsError, bindPersistence, hydrateState, getState, initialState, defaultGymHours, type State } from "@/lib/store";
 import { gym as gymSeed } from "@/lib/mock";
 import { saveRecords, getStaff, getReportingEvents } from "@/lib/cloud.functions";
 import { Button } from "./ui/button";
@@ -178,7 +178,9 @@ export function CloudProvider({ children }: { children: ReactNode }) {
               };
             }),
           }));
-        const result = await save({
+        let result: Awaited<ReturnType<typeof save>>;
+        try {
+          result = await save({
           data: {
             gymId: id,
             changes: formatted as Array<{
@@ -199,6 +201,24 @@ export function CloudProvider({ children }: { children: ReactNode }) {
             }>,
           },
         });
+        } catch (e) {
+          if (!(e instanceof Error) || !e.message.includes("Records changed")) throw e;
+          // Another tab or device saved first: load the latest records so the change can be re-applied on top of them.
+          const { data: fresh, error: freshError } = await supabase.from("gym_records").select("*").eq("gym_id", id);
+          if (freshError || !fresh) throw e;
+          savedRows = fresh as typeof savedRows;
+          const latest = { ...getState() };
+          for (const kind of Object.keys(changes)) {
+            const rowsForKind = fresh.filter((r) => r.kind === kind).map((r) => {
+              const data = r.data as Record<string, unknown>;
+              return kind === "members" ? { ...data, email: data["email"] ?? "" } : data;
+            });
+            if (kind === "gym") { const first = rowsForKind[0]; if (first) latest.gym = first as unknown as State["gym"]; }
+            else if (kind in latest) (latest as unknown as Record<string, unknown>)[kind] = rowsForKind;
+          }
+          if (current === generation.current) hydrateState(latest);
+          throw new StaleRecordsError(e.message);
+        }
         savedRows = result.records as typeof savedRows;
         const next = { ...getState(), ...changes };
         if (changes.members) next.membershipEvents = await reportingFetch({data:{gymId:id}});
@@ -217,7 +237,7 @@ export function CloudProvider({ children }: { children: ReactNode }) {
         if (current === generation.current) hydrateState(next);
         toast.success("Changes saved");
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Could not save changes");
+        if (!(e instanceof StaleRecordsError)) toast.error(e instanceof Error ? e.message : "Could not save changes");
         throw e;
       }
     });
