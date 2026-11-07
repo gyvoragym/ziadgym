@@ -1,0 +1,9 @@
+import { prototypeStorage } from './prototype-storage';
+import { getDemoSessionInfo } from './demo';
+import type { GymEvent } from './gym-events';
+export type GymNotice = GymEvent & { read: boolean; dismissed: boolean };
+export function readGymEvents(gymId: string): GymEvent[] { try { return JSON.parse(prototypeStorage().getItem(`ironhaus-gym-events:${gymId}`) ?? '[]'); } catch { return []; } }
+export function appendGymEvents(gymId: string, events: GymEvent[]) { const rows = readGymEvents(gymId); prototypeStorage().setItem(`ironhaus-gym-events:${gymId}`, JSON.stringify([...events.filter(e => !rows.some(r => r.id === e.id)), ...rows])); window.dispatchEvent(new Event('ironhaus-gym-events')); }
+function statusKey(gymId: string) { const info = getDemoSessionInfo(); if (info?.kind !== 'owner') throw new Error('Gym owner account required'); return `ironhaus-gym-notice-status:${gymId}:${info.email.trim().toLowerCase() || 'anonymous'}`; }
+export function demoGymNotices(gymId: string): GymNotice[] { let states: Record<string, { read?: boolean; dismissed?: boolean }> = {}; try { states = JSON.parse(prototypeStorage().getItem(statusKey(gymId)) ?? '{}'); } catch { return []; } return readGymEvents(gymId).map(e => ({ ...e, read: !!states[e.id]?.read, dismissed: !!states[e.id]?.dismissed })); }
+export function changeDemoNotices(gymId: string, ids: string[], dismiss = false) { const key = statusKey(gymId); const states = JSON.parse(prototypeStorage().getItem(key) ?? '{}'); for (const id of ids) states[id] = { ...states[id], read: true, ...(dismiss ? { dismissed: true } : {}) }; prototypeStorage().setItem(key, JSON.stringify(states)); window.dispatchEvent(new Event('ironhaus-gym-events')); }
