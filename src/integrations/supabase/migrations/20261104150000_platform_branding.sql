@@ -1,0 +1,3 @@
+ALTER TABLE public.platform_settings
+  ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT 'GYVORA',
+  ADD COLUMN IF NOT EXISTS logo text NOT NULL DEFAULT '';
