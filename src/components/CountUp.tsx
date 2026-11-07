@@ -8,10 +8,12 @@ export function CountUp({ value, duration = 600 }: { value: string; duration?: n
   const target = m ? Number(m[0].replace(/,/g, "")) : NaN;
   const decimals = m && m[0].includes(".") ? m[0].split(".")[1]!.length : 0;
   const from = useRef(0);
-  const [n, setN] = useState(target);
+  const [n, setN] = useState(Number.isFinite(target) ? target : 0);
   useEffect(() => {
-    if (!Number.isFinite(target) || reduced()) { setN(target); from.current = target; return; }
-    const start = performance.now(), a = from.current;
+    // Placeholder text such as "…" or "—" has no number: keep the last real value as the start point.
+    if (!Number.isFinite(target)) return;
+    if (reduced()) { setN(target); from.current = target; return; }
+    const start = performance.now(), a = Number.isFinite(from.current) ? from.current : 0;
     let raf = 0;
     const tick = (t: number) => {
       const p = Math.min(1, (t - start) / duration), e = 1 - Math.pow(1 - p, 3);
@@ -22,6 +24,7 @@ export function CountUp({ value, duration = 600 }: { value: string; duration?: n
     return () => { cancelAnimationFrame(raf); from.current = target; };
   }, [target, duration]);
   if (!m || !Number.isFinite(target)) return <>{value}</>;
-  const shown = n.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  const safe = Number.isFinite(n) ? n : target;
+  const shown = safe.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   return <><span aria-hidden="true">{value.slice(0, m.index)}{shown}{value.slice(m.index + m[0].length)}</span><span className="sr-only">{value}</span></>;
 }
