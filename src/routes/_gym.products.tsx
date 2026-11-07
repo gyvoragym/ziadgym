@@ -75,11 +75,32 @@ function SoldQuantity({
   disabled: boolean;
   onChange: (n: number) => Promise<boolean>;
 }) {
+  // Changes stay a draft until the owner presses Save, so nothing is written on every click.
   const [value, setValue] = useState(String(p.sales));
-  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   useEffect(() => {
     setValue(String(p.sales));
   }, [p.sales]);
+  const n = Number(value);
+  const max = p.sales + p.qty;
+  const error = !value.trim() || !Number.isSafeInteger(n) || n < 0
+    ? "Enter a non-negative whole number"
+    : n > max
+      ? `Not enough stock. Maximum is ${max}.`
+      : "";
+  const dirty = value !== String(p.sales);
+  const draft = error ? p.sales : n;
+  const step = (d: number) => setValue(String(Math.min(max, Math.max(0, (error ? p.sales : n) + d))));
+  async function save() {
+    if (error || !dirty) return;
+    setSaving(true);
+    try {
+      if (!(await onChange(n))) setValue(String(p.sales));
+    } finally {
+      setSaving(false);
+    }
+  }
+  const locked = disabled || saving;
   return (
     <div>
       <div className="flex items-center gap-2">
@@ -88,8 +109,8 @@ function SoldQuantity({
           variant="secondary"
           title="Decrease quantity sold"
           aria-label={`Decrease quantity sold for ${p.name}`}
-          disabled={disabled || p.sales === 0}
-          onClick={() => void onChange(p.sales - 1)}
+          disabled={locked || draft <= 0}
+          onClick={() => step(-1)}
         >
           <Minus className="h-4 w-4" />
         </Button>
@@ -97,24 +118,16 @@ function SoldQuantity({
           aria-label={`Quantity sold for ${p.name}`}
           type="number"
           min={0}
+          max={max}
           step={1}
           value={value}
-          disabled={disabled}
+          disabled={locked}
           aria-invalid={!!error}
           className="min-w-0 text-center"
-          onChange={async (e) => {
-            const raw = e.target.value;
-            setValue(raw);
-            if (!raw.trim() || !Number.isSafeInteger(Number(raw)) || Number(raw) < 0) {
-              setError("Enter a non-negative whole number");
-              return;
-            }
-            setError("");
-            if (!(await onChange(Number(raw)))) setValue(String(p.sales));
-          }}
-          onBlur={() => {
-            setValue(String(p.sales));
-            setError("");
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); void save(); }
+            if (e.key === "Escape") setValue(String(p.sales));
           }}
         />
         <Button
@@ -122,8 +135,8 @@ function SoldQuantity({
           variant="secondary"
           title="Increase quantity sold"
           aria-label={`Increase quantity sold for ${p.name}`}
-          disabled={disabled}
-          onClick={() => void onChange(p.sales + 1)}
+          disabled={locked || draft >= max}
+          onClick={() => step(1)}
         >
           <Plus className="h-4 w-4" />
         </Button>
@@ -132,6 +145,21 @@ function SoldQuantity({
         <p role="alert" className="mt-2 text-xs text-destructive">
           {error}
         </p>
+      )}
+      {dirty && (
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground">
+            {error ? "Fix the quantity to save" : `Unsaved · was ${p.sales}`}
+          </span>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" disabled={saving} onClick={() => setValue(String(p.sales))}>
+              Cancel
+            </Button>
+            <Button size="sm" disabled={locked || !!error} onClick={() => void save()}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );
