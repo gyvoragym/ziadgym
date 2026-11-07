@@ -174,10 +174,23 @@ export function hydrateState(next: State) {
 export function setState(fn: (s: State) => Partial<State>) {
   void saveState(fn).catch(() => {});
 }
+/** Thrown by the cloud saver when someone else saved first; the latest records are already loaded. */
+export class StaleRecordsError extends Error {}
 export async function saveState(fn: (s: State) => Partial<State>) {
   const changes = fn(state);
   if (persist) {
-    await persist(changes);
+    try {
+      await persist(changes);
+    } catch (e) {
+      if (!(e instanceof StaleRecordsError)) throw e;
+      // Re-apply the same change to the freshly loaded records once; a second conflict is reported normally.
+      try {
+        await persist(fn(state));
+      } catch (retryError) {
+        if (retryError instanceof StaleRecordsError) throw new Error("Someone else is editing these records right now. Please try again.");
+        throw retryError;
+      }
+    }
     return;
   }
   state = { ...state, ...changes };
