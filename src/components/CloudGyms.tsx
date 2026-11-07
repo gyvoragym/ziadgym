@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useServerFn } from '@tanstack/react-start';
-import { listAdminGyms, setGymFrozen, changeGymDeletion, editAdminGym, setGymAdminNote, setGymDeletionNote } from '@/lib/platform-admin.functions';
+import { listAdminGyms, setGymFrozen, changeGymDeletion, setGymAdminNote, setGymDeletionNote } from '@/lib/platform-admin.functions';
+import { CloudGymEdit } from './CloudGymEdit';
 import { Input } from './ui/input';
 import { Field } from './kit';
 import { Button } from './ui/button';
@@ -21,11 +22,9 @@ export function CloudGyms({ deleted = false }: { deleted?: boolean }) {
   const list = useServerFn(listAdminGyms);
   const freeze = useServerFn(setGymFrozen);
   const remove = useServerFn(changeGymDeletion);
-  const saveGym = useServerFn(editAdminGym);
   const saveNote = useServerFn(setGymAdminNote);
   const saveDeletionNote = useServerFn(setGymDeletionNote);
   const [editing,setEditing]=useState<AdminGym|null>(null);
-  const [gymName,setGymName]=useState('');
   const [rows, setRows] = useState<AdminGym[]>([]);
   const [error, setError] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -118,7 +117,7 @@ export function CloudGyms({ deleted = false }: { deleted?: boolean }) {
               <td className={td}><AdminNoteCell gymName={g.name} note={g.adminNote} onSave={async note=>{await saveNote({data:{gymId:g.id,note}});await load();}} /></td>
               <td className={`${td} min-w-[19rem]`}><div className="flex flex-nowrap gap-2">
                 <Button size="icon" variant="ghost" aria-label={`Message ${g.name} owner`} disabled={busy} onClick={()=>{setMessaging(g);setMessageBody('');}}><MessageSquare className="h-4 w-4"/></Button>
-                <Button size="sm" variant="outline" disabled={busy} onClick={()=>{setEditing(g);setGymName(g.name);}}>Edit</Button>
+                <Button size="sm" variant="outline" disabled={busy} onClick={()=>setEditing(g)}>Edit</Button>
                 {g.frozen ? <Button size="sm" variant="secondary" disabled={busy} onClick={()=>void unfreeze(g)}>Unfreeze</Button> : <Button size="sm" variant="secondary" disabled={busy} onClick={()=>{setFreezing(g);setNote('');}}>Freeze</Button>}
                 <Button size="sm" variant="destructive" disabled={busy} onClick={()=>{setDeleting(g);setDeletionNote('');}}>Delete</Button>
               </div></td>
@@ -128,7 +127,7 @@ export function CloudGyms({ deleted = false }: { deleted?: boolean }) {
         })}
       </DataTable></>}
       {!visibleRows.length && <p className="py-6 text-muted-foreground">{deleted ? "No deleted gyms." : "No approved gyms yet. Approve a request to add one."}</p>}
-      <Dialog open={!!editing} onOpenChange={open=>{if(!open)setEditing(null);}}><DialogContent><DialogHeader><DialogTitle>Edit gym</DialogTitle></DialogHeader><form className="space-y-4" onSubmit={async e=>{e.preventDefault();if(!editing)return;setBusy(true);try{await saveGym({data:{gymId:editing.id,name:gymName}});setEditing(null);await load();toast.success('Gym details saved.');}catch(e){setError(e instanceof Error?e.message:'Could not save gym.');}finally{setBusy(false);}}}><Field label="Gym name"><Input required maxLength={100} value={gymName} onChange={e=>setGymName(e.target.value)}/></Field><DialogFooter><Button type="button" variant="outline" onClick={()=>setEditing(null)}>Cancel</Button><Button disabled={busy}>Save</Button></DialogFooter></form></DialogContent></Dialog>
+      {editing&&<CloudGymEdit key={editing.id} gym={editing} onClose={()=>setEditing(null)} onSaved={load}/>}
 
       <Dialog open={!!deleting || !!restoring} onOpenChange={open=>{if(!open){setDeleting(null);setRestoring(null);}}}>
         <DialogContent><DialogHeader><DialogTitle>{deleting ? 'Delete' : 'Restore'} {(deleting ?? restoring)?.name}</DialogTitle></DialogHeader>
