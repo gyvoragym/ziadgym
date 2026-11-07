@@ -53,7 +53,8 @@ function CloudPlatformDashboard() {
       id:g.id,name:g.name,phone:g.ownerPhone,email:g.ownerEmail,plan:g.plan,start:g.subscriptionStart,end,
       status:g.frozen?'Frozen':'Active',billingType,durationDays,
       ...(g.monthlyPrice===null?{}:{monthlyPrice:g.monthlyPrice}),
-      ...(g.annualPrice===null?{}:{annualPrice:g.annualPrice,annualPriceManual:billingType==='Annual'}),
+      ...(g.annualPrice===null?{}:{annualPrice:g.annualPrice,annualPriceManual:g.annualPriceManual}),
+      ...(g.planId?{planId:g.planId}:{}),
     };
   }),[cloudGyms]);
 
