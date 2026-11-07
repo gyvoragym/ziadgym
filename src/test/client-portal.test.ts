@@ -1,0 +1,30 @@
+import {describe,it,expect,beforeEach} from 'vitest';
+import {demoMemberId,demoUserId,setDemoSession,readDemoGym,writeDemoGym,readDemoMembershipHistory,saveDemoProgram,changeDemoProgram,getDemoState} from '@/lib/demo';
+import {readClientLinks,updateClientLink,clientGymContent,demoMemberships,isCurrentMembership,findGymByLookup,resolveGymLookup} from '@/lib/client-portal';
+import {createAccountQrPayload} from '@/lib/account-qr-payload';
+import {recordClientVisit} from '@/lib/client-attendance';
+import {ensureDemoIdentity,syncDemoIdentities} from '@/lib/demo-identities';
+import {resetDemoTestState,seedDemoGymFixture} from './demo-fixtures';
+describe('client portal rules',()=>{
+  beforeEach(()=>{resetDemoTestState();seedDemoGymFixture();setDemoSession('individual','layla.hassan@mail.com');});
+  it('Member ID remains stable across sign-out and differs for another person',async()=>{const id=demoUserId('layla.hassan@mail.com');const other=demoUserId('omar.khaled@mail.com');ensureDemoIdentity('C',id);ensureDemoIdentity('C',other);await syncDemoIdentities(async({data})=>data.identities.map((r,i)=>({...r,id:`GYVORA-${r.kind}-${100000000000000+i}`})));const first=demoMemberId(id);expect(first).toMatch(/^GYVORA-C-[0-9]{15}$/);setDemoSession(null);setDemoSession('individual','layla.hassan@mail.com');expect(demoMemberId(id)).toBe(first);expect(demoMemberId(other)).not.toBe(first);});
+  it('joining does not create a paid membership',()=>{const id=demoUserId('layla.hassan@mail.com');const before=demoMemberships(id).length;updateClientLink(id,'gym-2','join');expect(readClientLinks(id).some(g=>g.gymId==='gym-2')).toBe(true);expect(demoMemberships(id)).toHaveLength(before);});
+  it('treats a membership end date as exclusive and exhausted limited plans as expired',()=>{const base=readDemoGym('demo-gym',true).members[0];if(!base)throw new Error('Missing member');const snapshot={...base,gym:'Demo',gymId:'demo-gym'};expect(isCurrentMembership(snapshot,snapshot.expiry)).toBe(false);expect(isCurrentMembership({...snapshot,type:'Limited',sessionsLeft:0},snapshot.start)).toBe(false);});
+  it('favorites persist per person',()=>{const id=demoUserId('favorite@test.com');updateClientLink(id,'gym-1','join');updateClientLink(id,'gym-1','favorite');expect(readClientLinks(id)).toEqual([{gymId:'gym-1',favorite:true}]);expect(readClientLinks(demoUserId('other@test.com'))).toEqual([]);});
+  it('leaving retains memberships, visits and client workout copies',()=>{const id=demoUserId('layla.hassan@mail.com');const gym=readDemoGym('demo-gym',true);writeDemoGym('demo-gym',gym);saveDemoProgram(id,{name:'Own workout',trainer:'',notes:'',exercises:[{name:'Squat',sets:3,reps:'10'}]});const history=readDemoMembershipHistory(id);const programs=getDemoState().programs.filter(p=>p.user_id===id);updateClientLink(id,'demo-gym','join');updateClientLink(id,'demo-gym','leave');expect(readClientLinks(id).some(l=>l.gymId==='demo-gym')).toBe(false);expect(readDemoMembershipHistory(id)).toEqual(history);expect(readDemoGym('demo-gym').attendance).toEqual(gym.attendance);expect(getDemoState().programs.filter(p=>p.user_id===id)).toEqual(programs);});
+  it('one QR check-in records the actual date/time and rejects a duplicate',()=>{const member=readDemoGym('demo-gym',true).members[0];if(!member)throw new Error('Missing seed member');const now=new Date(2026,9,20,14,3);const rows=recordClientVisit([],member,'QR',now);expect(rows[0]).toMatchObject({date:'2026-10-20',time:'14:03',memberId:member.id,method:'QR'});expect(()=>recordClientVisit(rows,member,'QR',now)).toThrow('Already checked in today');});
+  it('browses listed gym content without joining but rejects unknown gyms',async()=>{await expect(clientGymContent('demo-gym-north')).resolves.toHaveProperty('plans');await expect(clientGymContent('never-joined')).rejects.toThrow('unavailable');});
+  it('resolves a gym by GYVORA ID or its account QR profile',()=>{
+    const gym={id:'gym-record-1',gyvoraId:'GYVORA-G-123',name:'North Gym',location:'',image:'',description:''};
+    const directory=[gym];
+    const qr=createAccountQrPayload({type:'gym',gyvora_id:gym.gyvoraId,full_name:gym.name,email:'',phone:''});
+    expect(findGymByLookup(directory,'gyvora-g-123')).toEqual(gym);
+    expect(resolveGymLookup(qr)).toBe(gym.gyvoraId);
+    expect(findGymByLookup(directory,qr)).toEqual(gym);
+    expect(findGymByLookup(directory,'ironhaus:gym:GYVORA-G-123')).toEqual(gym);
+    const clientQr=createAccountQrPayload({type:'individual',gyvora_id:'GYVORA-C-123',full_name:'Client',email:'',phone:''});
+    expect(findGymByLookup(directory,clientQr)).toBeUndefined();
+  });
+  it('retains the old membership dates and plan after renewal',()=>{const id=demoUserId('layla.hassan@mail.com');const gym=readDemoGym('demo-gym',true);const m=gym.members.find(x=>(x.clientId??demoUserId(x.email))===id);if(!m)throw new Error('Missing member');writeDemoGym('demo-gym',{...gym,members:gym.members.map(x=>x.id===m.id?{...x,plan:'Renewed Plan',start:'2027-02-16',expiry:'2027-03-16'}:x)});expect(readDemoMembershipHistory(id).some(r=>r.definition.plan===m.plan&&r.definition.start===m.start&&r.definition.expiry===m.expiry)).toBe(true);writeDemoGym('demo-gym',gym);});
+  it('completion toggles and resets without changing definition',()=>{const id=demoUserId('layla.hassan@mail.com');saveDemoProgram(id,{name:'Completion',trainer:'',notes:'',exercises:[{name:'Press',sets:4,reps:'8'}]});const row=getDemoState().programs.find(p=>p.user_id===id&&p.definition.name==='Completion');if(!row)throw new Error('Missing program');changeDemoProgram(row.id,[0]);expect(getDemoState().programs.find(p=>p.id===row.id)?.completion).toEqual([0]);changeDemoProgram(row.id,[]);expect(getDemoState().programs.find(p=>p.id===row.id)?.definition).toEqual(row.definition);expect(getDemoState().programs.find(p=>p.id===row.id)?.completion).toEqual([]);});
+});
