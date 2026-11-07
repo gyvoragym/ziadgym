@@ -51,20 +51,21 @@ export const listAdminGyms=createServerFn({method:'POST'}).middleware([requireSu
   const ids=[...new Set((gyms??[]).map(g=>g.owner_id))];
   const {supabaseAdmin}=await import('@/integrations/supabase/client.server');
   const {data:profiles}=ids.length?await supabaseAdmin.from('profiles').select('id,full_name,email,phone').in('id',ids):{data:[] as {id:string;full_name:string;email:string;phone:string}[]};
-  const {data:requests,error:requestError}=await context.supabase.from('owner_requests').select('gym_id,plan,status,phone,decided_at,request_billing_type,request_duration_days,request_price');
+  const {data:requests,error:requestError}=await supabaseAdmin.from('owner_requests').select('gym_id,plan,status,phone,decided_at,request_plan_id,request_billing_type,request_duration_days,request_price,subscription_start,subscription_end,monthly_price,annual_price,annual_price_manual');
   if(requestError)throw new Error('Could not load approved gym subscriptions.');
   return (gyms??[]).filter(g=>g.deleted_at || requests?.some(r=>r.gym_id===g.id&&r.status==='Approved')).map(g=>{
     const request=requests?.find(r=>r.gym_id===g.id&&r.status==='Approved');
-    const start=request?.decided_at?.slice(0,10)??'';
+    const start=request?.subscription_start??request?.decided_at?.slice(0,10)??'';
     const duration=request?.request_duration_days??null;
     const price=request?.request_price??null;
-    let end='';
-    if(start&&duration)try{end=planEndDate(start,duration);}catch{end='';}
+    let end=request?.subscription_end??'';
+    if(!end&&start&&duration)try{end=planEndDate(start,duration);}catch{end='';}
+    const monthlyPrice=request?.monthly_price!=null?Number(request.monthly_price):price===null?null:request?.request_billing_type==='Annual'?price/12:price;
+    const annualPrice=request?.annual_price!=null?Number(request.annual_price):price===null?null:request?.request_billing_type==='Annual'?price:price*12;
     return {
       id:g.id,name:g.name,ownerId:g.owner_id,ownerName:profiles?.find(p=>p.id===g.owner_id)?.full_name||'',ownerEmail:profiles?.find(p=>p.id===g.owner_id)?.email||'',ownerPhone:profiles?.find(p=>p.id===g.owner_id)?.phone||requests?.find(r=>r.gym_id===g.id)?.phone||'',
-      plan:request?.plan??'',billingType:request?.request_billing_type??'',durationDays:duration,
-      monthlyPrice:price===null?null:request?.request_billing_type==='Annual'?price/12:price,
-      annualPrice:price===null?null:request?.request_billing_type==='Annual'?price:price*12,
+      plan:request?.plan??'',planId:request?.request_plan_id??'',billingType:request?.request_billing_type??'',durationDays:duration,
+      monthlyPrice,annualPrice,annualPriceManual:request?.annual_price_manual??request?.request_billing_type==='Annual',
       subscriptionStart:start,subscriptionEnd:end,deleted:!!g.deleted_at,deletedAt:g.deleted_at,deletionNote:g.deletion_note,frozen:!!g.frozen_at,freezeNote:g.freeze_note??'',adminNote:g.admin_note??'',
     };
   });
@@ -77,15 +78,42 @@ export const changeGymDeletion=createServerFn({method:'POST'}).middleware([requi
 });
 
 export const editAdminGym = createServerFn({method:'POST'}).middleware([requireSupabaseAuth])
-  .inputValidator(input => z.object({gymId:z.string().uuid(),name:z.string().trim().min(1).max(100)}).strict().parse(input))
+  .inputValidator(input => z.object({
+    gymId:z.string().uuid(),
+    name:z.string().trim().min(1).max(100),
+    subscription:z.object({
+      plan:z.string().trim().min(1).max(100),
+      planId:z.string().max(100),
+      billingType:z.enum(['Monthly','Annual']).nullable(),
+      durationDays:z.number().int().positive().max(36500).nullable(),
+      monthlyPrice:z.number().finite().min(0).max(100000000),
+      annualPrice:z.number().finite().min(0).max(1200000000),
+      annualPriceManual:z.boolean(),
+      start:z.string().date(),
+      end:z.string().date(),
+      notes:z.string().trim().max(2000),
+    }).refine(d=>d.end>=d.start,{message:'Subscription end date must not be before the start date.'}).optional(),
+  }).strict().parse(input))
   .handler(async ({data,context}) => {
     const {data:allowed,error:roleError}=await context.supabase.rpc('is_super_admin');
     if(roleError || !allowed) throw new Error('Administrator access required');
     const {supabaseAdmin}=await import('@/integrations/supabase/client.server');
     const {data:gym,error}=await supabaseAdmin.from('gyms').select('id').eq('id',data.gymId).maybeSingle();
     if(error || !gym) throw new Error('Gym not found.');
-    const {error:updateError}=await supabaseAdmin.from('gyms').update({name:data.name}).eq('id',gym.id);
+    const sub=data.subscription;
+    const {error:updateError}=await supabaseAdmin.from('gyms').update(sub?{name:data.name,admin_note:sub.notes}:{name:data.name}).eq('id',gym.id);
     if(updateError) throw new Error('Could not save gym details.');
+    if(sub){
+      const {data:request,error:requestError}=await supabaseAdmin.from('owner_requests').select('id').eq('gym_id',gym.id).eq('status','Approved').maybeSingle();
+      if(requestError||!request) throw new Error('This gym has no approved subscription to edit.');
+      const {error:subError}=await supabaseAdmin.from('owner_requests').update({
+        plan:sub.plan,request_plan_id:sub.planId||null,request_billing_type:sub.billingType,request_duration_days:sub.durationDays,
+        request_price:sub.billingType==='Annual'?sub.annualPrice:sub.monthlyPrice,
+        subscription_start:sub.start,subscription_end:sub.end,
+        monthly_price:sub.monthlyPrice,annual_price:sub.annualPriceManual?sub.annualPrice:sub.monthlyPrice*12,annual_price_manual:sub.annualPriceManual,
+      }).eq('id',request.id);
+      if(subError) throw new Error('Could not save the subscription details.');
+    }
     return true;
   });
 
